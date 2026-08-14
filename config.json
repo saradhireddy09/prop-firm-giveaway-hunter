@@ -6,14 +6,28 @@
     "free prop firm",
     "free challenge",
     "100% free funded account",
+    "free $5k account",
     "free $10k account",
     "free $25k account",
     "free $50k account",
-    "free $100k account"
+    "free $100k account",
+    "free $200k account",
+    "prop firm contest",
+    "funded account contest",
+    "prop firm competition",
+    "free trading account",
+    "free funded trader"
   ],
   "feeds": [
     "https://news.google.com/rss/search?q=%22prop+firm+giveaway%22",
     "https://news.google.com/rss/search?q=%22funded+account+giveaway%22",
-    "https://news.google.com/rss/search?q=%22free+funded+account%22"
+    "https://news.google.com/rss/search?q=%22free+funded+account%22",
+    "https://news.google.com/rss/search?q=%22free+prop+firm%22",
+    "https://news.google.com/rss/search?q=%22free+challenge%22+%22prop+firm%22",
+    "https://news.google.com/rss/search?q=%22prop+firm+giveaway%22+site%3Ax.com",
+    "https://news.google.com/rss/search?q=%22free+funded+account%22+site%3Ax.com",
+    "https://news.google.com/rss/search?q=%22prop+firm%22+%22giveaway%22+site%3Ax.com",
+    "https://news.google.com/rss/search?q=%22funded+account%22+%22giveaway%22+site%3Ax.com",
+    "https://news.google.com/rss/search?q=%22free%22+%22$100k%22+%22prop+firm%22"
   ]
 }
