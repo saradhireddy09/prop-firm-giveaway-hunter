@@ -2,17 +2,21 @@ name: Prop Giveaway Hunter
 
 on:
   workflow_dispatch:
+
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "*/30 * * * *"
+
+permissions:
+  contents: write
 
 jobs:
   scan:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
 
     steps:
-      - uses: actions/checkout@v4
+
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -20,20 +24,27 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
 
       - name: Run scanner
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DISCOVERY_SCORE: "50"
           MIN_SCORE: "70"
-        run: python main.py
-
-      - name: Test Telegram
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          MAX_AGE_DAYS: "14"
         run: |
-          curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-            -d chat_id="${TELEGRAM_CHAT_ID}" \
-            --data-urlencode text="✅ Prop-Firm Giveaway Hunter is working! Telegram alerts are connected."
+          python main.py
+
+      - name: Save seen database
+        run: |
+          git config user.name "Prop Giveaway Hunter"
+          git config user.email "actions@github.com"
+
+          git add seen.json
+
+          git diff --cached --quiet || \
+            git commit -m "Update giveaway database"
+
+          git push
