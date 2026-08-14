@@ -16,11 +16,16 @@ from bs4 import BeautifulSoup
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
-MIN_SCORE = int(os.getenv("MIN_SCORE", "70"))
+# 50+ is kept for manual discovery
+DISCOVERY_SCORE = 50
+
+# 70+ is a high-confidence alert
+ALERT_SCORE = 70
+
+# Only consider recent articles
+MAX_AGE_DAYS = 7
 
 SEEN_FILE = "seen.json"
-
-MAX_AGE_DAYS = 7
 
 
 # ============================================================
@@ -61,14 +66,13 @@ PROP_FIRMS = [
     "Alpha Capital Group",
     "Blue Guardian",
     "Goat Funded Trader",
-    "Funded Trading",
-    "Instant Funding",
     "The Funded Trader",
+    "Instant Funding",
 ]
 
 
 # ============================================================
-# POSITIVE GIVEAWAY WORDS
+# GIVEAWAY WORDS
 # ============================================================
 
 GIVEAWAY_WORDS = [
@@ -87,7 +91,7 @@ GIVEAWAY_WORDS = [
 
 
 # ============================================================
-# ACTIVE / ENTRY WORDS
+# ENTRY / ACTION WORDS
 # ============================================================
 
 ACTIVE_WORDS = [
@@ -103,18 +107,15 @@ ACTIVE_WORDS = [
     "starts",
     "open",
     "running",
-    "ends",
-    "deadline",
 ]
 
 
 # ============================================================
-# STRONG NEGATIVE WORDS
+# NEGATIVE / IRRELEVANT WORDS
 # ============================================================
 
 BAD_WORDS = [
     "ended",
-    "ends",
     "expired",
     "closed",
     "winner announced",
@@ -143,42 +144,77 @@ BAD_WORDS = [
 
 
 # ============================================================
-# HELPERS
+# LOAD / SAVE SEEN ARTICLES
 # ============================================================
 
 def load_seen():
+
     try:
-        with open(SEEN_FILE, "r", encoding="utf-8") as f:
+        with open(
+            SEEN_FILE,
+            "r",
+            encoding="utf-8"
+        ) as f:
+
             return set(json.load(f))
+
     except Exception:
         return set()
 
 
 def save_seen(seen):
-    with open(SEEN_FILE, "w", encoding="utf-8") as f:
-        json.dump(list(seen)[-3000:], f)
 
+    with open(
+        SEEN_FILE,
+        "w",
+        encoding="utf-8"
+    ) as f:
+
+        json.dump(
+            list(seen)[-3000:],
+            f
+        )
+
+
+# ============================================================
+# CLEAN HTML
+# ============================================================
 
 def clean(text):
+
     if not text:
         return ""
 
     return BeautifulSoup(
         text,
         "html.parser"
-    ).get_text(" ", strip=True)
+    ).get_text(
+        " ",
+        strip=True
+    )
 
+
+# ============================================================
+# UNIQUE ARTICLE ID
+# ============================================================
 
 def make_id(title, link):
+
     return hashlib.sha256(
         f"{title}|{link}".encode()
     ).hexdigest()
 
 
+# ============================================================
+# IDENTIFY PROP FIRM
+# ============================================================
+
 def identify_firm(text):
+
     text_lower = text.lower()
 
     for firm in PROP_FIRMS:
+
         if firm.lower() in text_lower:
             return firm
 
@@ -200,6 +236,7 @@ def google_news(query):
     )
 
     try:
+
         response = requests.get(
             url,
             timeout=20,
@@ -214,31 +251,42 @@ def google_news(query):
 
         response.raise_for_status()
 
-        return feedparser.parse(response.content)
+        return feedparser.parse(
+            response.content
+        )
 
     except Exception as e:
-        print("Feed error:", e)
+
+        print(
+            "Feed error:",
+            e
+        )
+
         return None
 
 
 # ============================================================
-# RECENT ARTICLE CHECK
+# CHECK ARTICLE AGE
 # ============================================================
 
 def recent_entry(entry):
 
     try:
 
-        if hasattr(entry, "published_parsed"):
+        if hasattr(
+            entry,
+            "published_parsed"
+        ):
 
             published = datetime(
                 *entry.published_parsed[:6],
                 tzinfo=timezone.utc
             )
 
-            age = datetime.now(
-                timezone.utc
-            ) - published
+            age = (
+                datetime.now(timezone.utc)
+                - published
+            )
 
             return age <= timedelta(
                 days=MAX_AGE_DAYS
@@ -247,7 +295,8 @@ def recent_entry(entry):
     except Exception:
         pass
 
-    # If date cannot be read, don't automatically reject it.
+    # If Google does not provide a date,
+    # allow the article through for scoring.
     return True
 
 
@@ -259,17 +308,21 @@ def detect_deadline(text):
 
     patterns = [
 
+        # 08/31/2026
         r"(?:ends?|ending|deadline|closes?)"
-        r".{0,60}"
+        r".{0,80}"
         r"(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})",
 
+        # August 31, 2026
         r"(?:ends?|ending|deadline|closes?)"
-        r".{0,60}"
-        r"([A-Z][a-z]+\s+\d{1,2}(?:st|nd|rd|th)?"
+        r".{0,80}"
+        r"([A-Z][a-z]+\s+\d{1,2}"
+        r"(?:st|nd|rd|th)?"
         r"(?:,\s*\d{4})?)",
 
+        # until August 31
         r"(?:until|through)"
-        r".{0,40}"
+        r".{0,50}"
         r"([A-Z][a-z]+\s+\d{1,2})",
     ]
 
@@ -288,17 +341,23 @@ def detect_deadline(text):
 
 
 # ============================================================
-# CLASSIFY GIVEAWAY
+# CLASSIFY ARTICLE
 # ============================================================
 
 def classify(entry):
 
     title = clean(
-        entry.get("title", "")
+        entry.get(
+            "title",
+            ""
+        )
     )
 
     summary = clean(
-        entry.get("summary", "")
+        entry.get(
+            "summary",
+            ""
+        )
     )
 
     link = entry.get(
@@ -313,14 +372,14 @@ def classify(entry):
     lower = text.lower()
 
     # --------------------------------------------------------
-    # MUST BE RECENT
+    # RECENCY
     # --------------------------------------------------------
 
     if not recent_entry(entry):
         return None
 
     # --------------------------------------------------------
-    # MUST HAVE GIVEAWAY EVIDENCE
+    # GIVEAWAY EVIDENCE
     # --------------------------------------------------------
 
     giveaway_hits = sum(
@@ -333,7 +392,7 @@ def classify(entry):
         return None
 
     # --------------------------------------------------------
-    # MUST HAVE ENTRY / ACTION LANGUAGE
+    # ENTRY / ACTION EVIDENCE
     # --------------------------------------------------------
 
     entry_hits = sum(
@@ -346,7 +405,7 @@ def classify(entry):
         return None
 
     # --------------------------------------------------------
-    # REJECT IRRELEVANT CONTENT
+    # NEGATIVE CONTENT
     # --------------------------------------------------------
 
     bad_hits = sum(
@@ -355,10 +414,14 @@ def classify(entry):
         if word in lower
     )
 
+    # Two or more strong negative signals = reject
     if bad_hits >= 2:
         return None
 
-    # Strong rejection for obvious unrelated content
+    # --------------------------------------------------------
+    # OBVIOUSLY UNRELATED ARTICLES
+    # --------------------------------------------------------
+
     if (
         "nasdaq" in lower
         and "prop firm" not in lower
@@ -368,6 +431,7 @@ def classify(entry):
     if (
         "crypto airdrop" in lower
         or "token giveaway" in lower
+        or "bitcoin giveaway" in lower
     ):
         return None
 
@@ -389,17 +453,17 @@ def classify(entry):
         24
     )
 
-    # Identifiable prop firm
+    # Prop firm identified
     firm = identify_firm(text)
 
     if firm != "Unknown":
         score += 20
 
-    # Dollar / account value
+    # Monetary prize/account value
     if "$" in text:
         score += 5
 
-    # Funded-account evidence
+    # Funded account evidence
     funded_words = [
         "funded account",
         "funded account giveaway",
@@ -415,23 +479,23 @@ def classify(entry):
     ):
         score += 10
 
-    # Deadline is strong evidence
+    # Deadline evidence
     deadline = detect_deadline(text)
 
     if deadline:
         score += 10
 
+    # Cap at 100
+    score = min(
+        score,
+        100
+    )
+
     # --------------------------------------------------------
-    # CAP SCORE
+    # DISCOVERY THRESHOLD
     # --------------------------------------------------------
 
-    score = min(score, 100)
-
-    # --------------------------------------------------------
-    # MINIMUM SCORE
-    # --------------------------------------------------------
-
-    if score < MIN_SCORE:
+    if score < DISCOVERY_SCORE:
         return None
 
     return {
@@ -445,17 +509,19 @@ def classify(entry):
 
 
 # ============================================================
-# TELEGRAM
+# SEND TELEGRAM
 # ============================================================
 
 def send_telegram(message):
 
     if not TELEGRAM_BOT_TOKEN:
+
         raise RuntimeError(
             "TELEGRAM_BOT_TOKEN is missing"
         )
 
     if not TELEGRAM_CHAT_ID:
+
         raise RuntimeError(
             "TELEGRAM_CHAT_ID is missing"
         )
@@ -479,7 +545,7 @@ def send_telegram(message):
 
 
 # ============================================================
-# MAIN SCANNER
+# MAIN
 # ============================================================
 
 def main():
@@ -488,13 +554,19 @@ def main():
 
     candidates = {}
 
+    # --------------------------------------------------------
+    # SEARCH
+    # --------------------------------------------------------
+
     for query in SEARCHES:
 
         print(
             f'Searching: "{query}"'
         )
 
-        feed = google_news(query)
+        feed = google_news(
+            query
+        )
 
         if not feed:
             continue
@@ -502,7 +574,10 @@ def main():
         for entry in feed.entries:
 
             title = clean(
-                entry.get("title", "")
+                entry.get(
+                    "title",
+                    ""
+                )
             )
 
             link = entry.get(
@@ -515,26 +590,54 @@ def main():
                 link
             )
 
+            # Already processed
             if uid in seen:
                 continue
 
-            item = classify(entry)
+            item = classify(
+                entry
+            )
 
             if not item:
                 continue
 
-            # Keep the highest scoring result
-            # for the same article.
-            candidates[uid] = item
+            # Keep the best score
+            # if duplicate article appears
+            # in multiple searches.
+            if uid not in candidates:
+
+                candidates[uid] = item
+
+            else:
+
+                if (
+                    item["score"]
+                    >
+                    candidates[uid]["score"]
+                ):
+
+                    candidates[uid] = item
+
+    # --------------------------------------------------------
+    # SORT BY SCORE
+    # --------------------------------------------------------
+
+    candidates = dict(
+        sorted(
+            candidates.items(),
+            key=lambda x: x[1]["score"],
+            reverse=True
+        )
+    )
 
     print(
         f"QUALIFYING GIVEAWAYS: "
         f"{len(candidates)}"
     )
 
-    # ========================================================
-    # SEND ALERTS
-    # ========================================================
+    # --------------------------------------------------------
+    # NOTHING FOUND
+    # --------------------------------------------------------
 
     if not candidates:
 
@@ -542,35 +645,63 @@ def main():
             "No qualifying giveaways found."
         )
 
-        # Optional diagnostic message.
-        # This confirms the scanner is alive.
-        send_telegram(
-            "🔎 Prop-Firm Giveaway Hunter\n\n"
-            "Scan completed successfully.\n"
-            "No qualifying active prop-firm "
-            "giveaways found.\n\n"
-            f"Minimum score: {MIN_SCORE}/100"
-        )
+        try:
 
-    else:
-
-        for uid, item in candidates.items():
-
-            deadline = (
-                item["deadline"]
-                if item["deadline"]
-                else "Not detected"
+            send_telegram(
+                "🔎 Prop-Firm Giveaway Hunter\n\n"
+                "Scan completed successfully.\n\n"
+                "No qualifying active "
+                "prop-firm giveaways found.\n\n"
+                f"🔍 Discovery threshold: "
+                f"{DISCOVERY_SCORE}/100\n"
+                f"🚨 Alert threshold: "
+                f"{ALERT_SCORE}/100"
             )
 
+        except Exception as e:
+
+            print(
+                "Telegram error:",
+                e
+            )
+
+        save_seen(
+            seen
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # SEND RESULTS
+    # --------------------------------------------------------
+
+    for uid, item in candidates.items():
+
+        score = item["score"]
+
+        deadline = (
+            item["deadline"]
+            if item["deadline"]
+            else "Not detected"
+        )
+
+        # ====================================================
+        # HIGH CONFIDENCE
+        # ====================================================
+
+        if score >= ALERT_SCORE:
+
             message = (
+
                 "🚨 ACTIVE PROP-FIRM GIVEAWAY\n\n"
 
-                f"🏢 Firm: {item['firm']}\n\n"
+                f"🏢 Firm: "
+                f"{item['firm']}\n\n"
 
                 f"🎁 {item['title']}\n\n"
 
                 f"⭐ Confidence: "
-                f"{item['score']}/100\n\n"
+                f"{score}/100\n\n"
 
                 f"📅 Deadline: "
                 f"{deadline}\n\n"
@@ -581,28 +712,69 @@ def main():
                 f"{item['link']}"
             )
 
-            try:
+        # ====================================================
+        # POSSIBLE GIVEAWAY
+        # ====================================================
 
-                send_telegram(
-                    message
-                )
+        else:
 
-                print(
-                    f"TELEGRAM SENT | "
-                    f"{item['firm']} | "
-                    f"{item['score']}/100"
-                )
+            message = (
 
-                seen.add(uid)
+                "🔍 POSSIBLE PROP-FIRM GIVEAWAY\n\n"
 
-            except Exception as e:
+                f"🏢 Firm: "
+                f"{item['firm']}\n\n"
 
-                print(
-                    "Telegram error:",
-                    e
-                )
+                f"🎁 {item['title']}\n\n"
 
-    save_seen(seen)
+                f"⭐ Confidence: "
+                f"{score}/100\n\n"
+
+                "⚠️ Manual verification recommended.\n\n"
+
+                f"📅 Deadline: "
+                f"{deadline}\n\n"
+
+                f"📝 {item['summary']}\n\n"
+
+                f"🔗 SOURCE:\n"
+                f"{item['link']}"
+            )
+
+        # ----------------------------------------------------
+        # TELEGRAM
+        # ----------------------------------------------------
+
+        try:
+
+            send_telegram(
+                message
+            )
+
+            print(
+                f"TELEGRAM SENT | "
+                f"{item['firm']} | "
+                f"{score}/100"
+            )
+
+            # Mark as seen ONLY after successful
+            # Telegram delivery.
+            seen.add(uid)
+
+        except Exception as e:
+
+            print(
+                "Telegram error:",
+                e
+            )
+
+    # --------------------------------------------------------
+    # SAVE SEEN
+    # --------------------------------------------------------
+
+    save_seen(
+        seen
+    )
 
 
 # ============================================================
