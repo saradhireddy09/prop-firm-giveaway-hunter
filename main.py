@@ -2,7 +2,9 @@ import os
 import re
 import json
 import hashlib
-from datetime import datetime, timezone, timedelta
+import html
+from datetime import datetime, timedelta, timezone
+from urllib.parse import quote_plus
 
 import requests
 import feedparser
@@ -10,20 +12,16 @@ from bs4 import BeautifulSoup
 
 
 # ============================================================
-# CONFIG
+# CONFIGURATION
 # ============================================================
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
-# 50+ is kept for manual discovery
-DISCOVERY_SCORE = 50
+DISCOVERY_THRESHOLD = int(os.getenv("DISCOVERY_SCORE", "50"))
+ALERT_THRESHOLD = int(os.getenv("MIN_SCORE", "70"))
 
-# 70+ is a high-confidence alert
-ALERT_SCORE = 70
-
-# Only consider recent articles
-MAX_AGE_DAYS = 7
+MAX_AGE_DAYS = int(os.getenv("MAX_AGE_DAYS", "14"))
 
 SEEN_FILE = "seen.json"
 
@@ -34,501 +32,173 @@ SEEN_FILE = "seen.json"
 
 SEARCHES = [
     '"prop firm" giveaway',
+    '"prop firm" giveaway 2026',
+    '"prop firm" contest',
+    '"prop firm" competition',
     '"prop trading" giveaway',
+    '"prop trading" contest',
     '"funded account" giveaway',
+    '"funded account" contest',
     '"funded trader" giveaway',
+    '"funded trader" contest',
     '"free prop firm" challenge',
-    '"prop firm" sweepstakes',
+    '"free funded account" challenge',
     '"trading challenge" giveaway',
+    '"prop firm" sweepstakes',
+    '"trading account" giveaway',
+    '"funded account" free',
+    '"free trading challenge" prop firm',
 ]
 
 
 # ============================================================
-# PROP FIRMS
+# KNOWN PROP FIRMS
 # ============================================================
 
 PROP_FIRMS = [
+    "FTMO",
     "FundedNext",
-    "FundingPips",
     "The5ers",
+    "FundingPips",
     "E8 Markets",
     "E8",
-    "Funded Trader Markets",
     "Funded Trading Plus",
-    "FTMO",
+    "Funded Trader Markets",
+    "FundedFirm",
     "Hola Prime",
-    "Funded Firm",
     "Tradeify",
     "MyFundedFX",
-    "FXIFY",
     "Topstep",
-    "Axi Select",
-    "Alpha Capital Group",
+    "Apex Trader Funding",
+    "Apex",
+    "Take Profit Trader",
+    "MFF",
+    "MFFX",
+    "Futures Elite",
+    "FXIFY",
     "Blue Guardian",
     "Goat Funded Trader",
-    "The Funded Trader",
     "Instant Funding",
+    "Funded Trading Plus",
+    "Lux Trading Firm",
+    "Alpha Capital Group",
+    "The Funded Trader",
+    "Funding Traders",
+    "Finotive Funding",
+    "Ment Funding",
+    "DNA Funded",
+    "FundedNext",
+    "OneUp Trader",
+    "Bulenox",
 ]
 
 
 # ============================================================
-# GIVEAWAY WORDS
+# GIVEAWAY / ENTRY WORDS
 # ============================================================
 
 GIVEAWAY_WORDS = [
     "giveaway",
     "give away",
     "sweepstakes",
-    "contest",
     "win",
     "winner",
     "prize",
+    "prizes",
     "free account",
-    "free challenge",
     "free funded account",
-    "free prop account",
+    "free challenge",
+    "free prop firm challenge",
+    "free trading account",
 ]
 
 
-# ============================================================
-# ENTRY / ACTION WORDS
-# ============================================================
-
-ACTIVE_WORDS = [
+ENTRY_WORDS = [
     "enter",
     "entry",
     "join",
-    "participate",
     "register",
+    "participate",
     "sign up",
     "signup",
-    "apply",
-    "claim",
-    "starts",
+    "retweet",
+    "repost",
+    "follow",
+    "like",
+    "comment",
+    "share",
+    "tag",
+    "competition",
+    "contest",
+]
+
+
+ACTIVE_WORDS = [
+    "open now",
     "open",
-    "running",
+    "ongoing",
+    "active",
+    "currently",
+    "enter now",
+    "entries open",
+    "registration open",
+    "register now",
+    "join now",
+    "ends",
+    "deadline",
+    "until",
+    "closes",
+    "closing",
+    "last chance",
+    "still available",
 ]
 
 
-# ============================================================
-# NEGATIVE / IRRELEVANT WORDS
-# ============================================================
-
-BAD_WORDS = [
+EXCLUDE_WORDS = [
     "ended",
-    "expired",
-    "closed",
-    "winner announced",
-    "past giveaway",
+    "ends 2024",
+    "ended 2024",
+    "ends 2025",
+    "ended 2025",
+    "2024 giveaway",
+    "2025 giveaway",
+    "historical",
     "old giveaway",
-    "review",
-    "reviewed",
-    "news recap",
-    "podcast",
-    "youtube",
-    "live stream",
-    "livestream",
-    "nasdaq trading",
-    "nasdaq futures",
-    "day trading",
-    "scalping",
-    "order flow",
-    "price action",
+    "past giveaway",
     "crypto airdrop",
-    "airdrop",
     "token giveaway",
-    "bitcoin giveaway",
-    "crypto giveaway",
+    "nft giveaway",
     "casino",
+    "sports betting",
 ]
 
 
 # ============================================================
-# LOAD / SAVE SEEN ARTICLES
+# HTTP
 # ============================================================
 
-def load_seen():
-
-    try:
-        with open(
-            SEEN_FILE,
-            "r",
-            encoding="utf-8"
-        ) as f:
-
-            return set(json.load(f))
-
-    except Exception:
-        return set()
-
-
-def save_seen(seen):
-
-    with open(
-        SEEN_FILE,
-        "w",
-        encoding="utf-8"
-    ) as f:
-
-        json.dump(
-            list(seen)[-3000:],
-            f
-        )
-
-
-# ============================================================
-# CLEAN HTML
-# ============================================================
-
-def clean(text):
-
-    if not text:
-        return ""
-
-    return BeautifulSoup(
-        text,
-        "html.parser"
-    ).get_text(
-        " ",
-        strip=True
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) "
+        "AppleWebKit/537.36 Chrome/120 Safari/537.36"
     )
+}
 
 
 # ============================================================
-# UNIQUE ARTICLE ID
-# ============================================================
-
-def make_id(title, link):
-
-    return hashlib.sha256(
-        f"{title}|{link}".encode()
-    ).hexdigest()
-
-
-# ============================================================
-# IDENTIFY PROP FIRM
-# ============================================================
-
-def identify_firm(text):
-
-    text_lower = text.lower()
-
-    for firm in PROP_FIRMS:
-
-        if firm.lower() in text_lower:
-            return firm
-
-    return "Unknown"
-
-
-# ============================================================
-# GOOGLE NEWS RSS
-# ============================================================
-
-def google_news(query):
-
-    url = (
-        "https://news.google.com/rss/search?"
-        f"q={requests.utils.quote(query)}"
-        "&hl=en-US"
-        "&gl=US"
-        "&ceid=US:en"
-    )
-
-    try:
-
-        response = requests.get(
-            url,
-            timeout=20,
-            headers={
-                "User-Agent":
-                "Mozilla/5.0 "
-                "(Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 "
-                "Chrome/120 Safari/537.36"
-            },
-        )
-
-        response.raise_for_status()
-
-        return feedparser.parse(
-            response.content
-        )
-
-    except Exception as e:
-
-        print(
-            "Feed error:",
-            e
-        )
-
-        return None
-
-
-# ============================================================
-# CHECK ARTICLE AGE
-# ============================================================
-
-def recent_entry(entry):
-
-    try:
-
-        if hasattr(
-            entry,
-            "published_parsed"
-        ):
-
-            published = datetime(
-                *entry.published_parsed[:6],
-                tzinfo=timezone.utc
-            )
-
-            age = (
-                datetime.now(timezone.utc)
-                - published
-            )
-
-            return age <= timedelta(
-                days=MAX_AGE_DAYS
-            )
-
-    except Exception:
-        pass
-
-    # If Google does not provide a date,
-    # allow the article through for scoring.
-    return True
-
-
-# ============================================================
-# DEADLINE DETECTION
-# ============================================================
-
-def detect_deadline(text):
-
-    patterns = [
-
-        # 08/31/2026
-        r"(?:ends?|ending|deadline|closes?)"
-        r".{0,80}"
-        r"(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})",
-
-        # August 31, 2026
-        r"(?:ends?|ending|deadline|closes?)"
-        r".{0,80}"
-        r"([A-Z][a-z]+\s+\d{1,2}"
-        r"(?:st|nd|rd|th)?"
-        r"(?:,\s*\d{4})?)",
-
-        # until August 31
-        r"(?:until|through)"
-        r".{0,50}"
-        r"([A-Z][a-z]+\s+\d{1,2})",
-    ]
-
-    for pattern in patterns:
-
-        match = re.search(
-            pattern,
-            text,
-            re.IGNORECASE
-        )
-
-        if match:
-            return match.group(1)
-
-    return None
-
-
-# ============================================================
-# CLASSIFY ARTICLE
-# ============================================================
-
-def classify(entry):
-
-    title = clean(
-        entry.get(
-            "title",
-            ""
-        )
-    )
-
-    summary = clean(
-        entry.get(
-            "summary",
-            ""
-        )
-    )
-
-    link = entry.get(
-        "link",
-        ""
-    )
-
-    text = (
-        f"{title} {summary}"
-    ).strip()
-
-    lower = text.lower()
-
-    # --------------------------------------------------------
-    # RECENCY
-    # --------------------------------------------------------
-
-    if not recent_entry(entry):
-        return None
-
-    # --------------------------------------------------------
-    # GIVEAWAY EVIDENCE
-    # --------------------------------------------------------
-
-    giveaway_hits = sum(
-        1
-        for word in GIVEAWAY_WORDS
-        if word in lower
-    )
-
-    if giveaway_hits == 0:
-        return None
-
-    # --------------------------------------------------------
-    # ENTRY / ACTION EVIDENCE
-    # --------------------------------------------------------
-
-    entry_hits = sum(
-        1
-        for word in ACTIVE_WORDS
-        if word in lower
-    )
-
-    if entry_hits == 0:
-        return None
-
-    # --------------------------------------------------------
-    # NEGATIVE CONTENT
-    # --------------------------------------------------------
-
-    bad_hits = sum(
-        1
-        for word in BAD_WORDS
-        if word in lower
-    )
-
-    # Two or more strong negative signals = reject
-    if bad_hits >= 2:
-        return None
-
-    # --------------------------------------------------------
-    # OBVIOUSLY UNRELATED ARTICLES
-    # --------------------------------------------------------
-
-    if (
-        "nasdaq" in lower
-        and "prop firm" not in lower
-    ):
-        return None
-
-    if (
-        "crypto airdrop" in lower
-        or "token giveaway" in lower
-        or "bitcoin giveaway" in lower
-    ):
-        return None
-
-    # --------------------------------------------------------
-    # SCORE
-    # --------------------------------------------------------
-
-    score = 0
-
-    # Giveaway evidence
-    score += min(
-        giveaway_hits * 20,
-        40
-    )
-
-    # Entry/action evidence
-    score += min(
-        entry_hits * 8,
-        24
-    )
-
-    # Prop firm identified
-    firm = identify_firm(text)
-
-    if firm != "Unknown":
-        score += 20
-
-    # Monetary prize/account value
-    if "$" in text:
-        score += 5
-
-    # Funded account evidence
-    funded_words = [
-        "funded account",
-        "funded account giveaway",
-        "prop firm account",
-        "trading account",
-        "challenge account",
-        "evaluation account",
-    ]
-
-    if any(
-        word in lower
-        for word in funded_words
-    ):
-        score += 10
-
-    # Deadline evidence
-    deadline = detect_deadline(text)
-
-    if deadline:
-        score += 10
-
-    # Cap at 100
-    score = min(
-        score,
-        100
-    )
-
-    # --------------------------------------------------------
-    # DISCOVERY THRESHOLD
-    # --------------------------------------------------------
-
-    if score < DISCOVERY_SCORE:
-        return None
-
-    return {
-        "firm": firm,
-        "title": title,
-        "summary": summary[:700],
-        "link": link,
-        "score": score,
-        "deadline": deadline,
-    }
-
-
-# ============================================================
-# SEND TELEGRAM
+# TELEGRAM
 # ============================================================
 
 def send_telegram(message):
-
     if not TELEGRAM_BOT_TOKEN:
-
-        raise RuntimeError(
-            "TELEGRAM_BOT_TOKEN is missing"
-        )
+        raise RuntimeError("TELEGRAM_BOT_TOKEN is missing")
 
     if not TELEGRAM_CHAT_ID:
-
-        raise RuntimeError(
-            "TELEGRAM_CHAT_ID is missing"
-        )
+        raise RuntimeError("TELEGRAM_CHAT_ID is missing")
 
     url = (
-        "https://api.telegram.org/"
-        f"bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        f"https://api.telegram.org/bot"
+        f"{TELEGRAM_BOT_TOKEN}/sendMessage"
     )
 
     response = requests.post(
@@ -543,243 +213,553 @@ def send_telegram(message):
 
     response.raise_for_status()
 
+    data = response.json()
+
+    if not data.get("ok"):
+        raise RuntimeError(f"Telegram API error: {data}")
+
+    return True
+
 
 # ============================================================
-# MAIN
+# TELEGRAM CONNECTION TEST
 # ============================================================
 
-def main():
+def telegram_test():
+    message = (
+        "✅ Prop-Firm Giveaway Hunter\n\n"
+        "Telegram connection test successful.\n"
+        f"Discovery threshold: {DISCOVERY_THRESHOLD}/100\n"
+        f"Alert threshold: {ALERT_THRESHOLD}/100"
+    )
+
+    send_telegram(message)
+
+
+# ============================================================
+# GOOGLE NEWS RSS
+# ============================================================
+
+def google_news(query):
+    try:
+        encoded = quote_plus(query)
+
+        url = (
+            "https://news.google.com/rss/search?"
+            f"q={encoded}&hl=en-US&gl=US&ceid=US:en"
+        )
+
+        response = requests.get(
+            url,
+            headers=HEADERS,
+            timeout=20,
+        )
+
+        response.raise_for_status()
+
+        return feedparser.parse(response.content)
+
+    except Exception as e:
+        print("Feed error:", e)
+        return None
+
+
+# ============================================================
+# CLEAN TEXT
+# ============================================================
+
+def clean(text):
+    if not text:
+        return ""
+
+    text = html.unescape(text)
+
+    soup = BeautifulSoup(
+        text,
+        "html.parser"
+    )
+
+    return soup.get_text(" ", strip=True)
+
+
+# ============================================================
+# RECENCY
+# ============================================================
+
+def recent_entry(entry):
+
+    try:
+
+        if hasattr(entry, "published_parsed"):
+
+            published = datetime(
+                *entry.published_parsed[:6],
+                tzinfo=timezone.utc
+            )
+
+            age = datetime.now(timezone.utc) - published
+
+            return age <= timedelta(days=MAX_AGE_DAYS)
+
+    except Exception:
+        pass
+
+    # If date cannot be read, keep it.
+    return True
+
+
+# ============================================================
+# IDENTIFY FIRM
+# ============================================================
+
+def identify_firm(text):
+
+    text_lower = text.lower()
+
+    # First check known firms.
+    for firm in PROP_FIRMS:
+
+        if firm.lower() in text_lower:
+            return firm
+
+    # Try common generic firm names.
+    patterns = [
+        r"\b([A-Z][A-Za-z0-9&.-]{2,30}\s+(?:Markets|Funding|Capital|Trading|Trader|Firm))\b",
+        r"\b([A-Z][A-Za-z0-9&.-]{2,30}\s+Prop)\b",
+    ]
+
+    for pattern in patterns:
+
+        match = re.search(pattern, text)
+
+        if match:
+            return match.group(1).strip()
+
+    return "Unknown Prop Firm"
+
+
+# ============================================================
+# DEADLINE EXTRACTION
+# ============================================================
+
+def extract_deadline(text):
+
+    patterns = [
+
+        r"(?:deadline|ends?|ending|closes?|closing)"
+        r"\s*(?:on|:|-)?\s*"
+        r"([A-Z][a-z]+\s+\d{1,2}(?:,\s*\d{4})?)",
+
+        r"(?:deadline|ends?|ending|closes?|closing)"
+        r"\s*(?:on|:|-)?\s*"
+        r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})",
+
+        r"(?:deadline|ends?|ending|closes?|closing)"
+        r"\s*(?:on|:|-)?\s*"
+        r"(\d{4}-\d{2}-\d{2})",
+    ]
+
+    for pattern in patterns:
+
+        match = re.search(
+            pattern,
+            text,
+            flags=re.IGNORECASE
+        )
+
+        if match:
+            return match.group(1)
+
+    return None
+
+
+# ============================================================
+# SCORE
+# ============================================================
+
+def score_item(title, summary):
+
+    text = f"{title} {summary}".lower()
+
+    giveaway_hits = sum(
+        1
+        for word in GIVEAWAY_WORDS
+        if word in text
+    )
+
+    entry_hits = sum(
+        1
+        for word in ENTRY_WORDS
+        if word in text
+    )
+
+    active_hits = sum(
+        1
+        for word in ACTIVE_WORDS
+        if word in text
+    )
+
+    prop_hits = sum(
+        1
+        for firm in PROP_FIRMS
+        if firm.lower() in text
+    )
+
+    score = 0
+
+    # Giveaway evidence
+    score += min(giveaway_hits * 15, 30)
+
+    # Entry/action evidence
+    score += min(entry_hits * 8, 20)
+
+    # Active evidence
+    score += min(active_hits * 10, 20)
+
+    # Prop-firm evidence
+    score += min(prop_hits * 15, 30)
+
+    # Money/prize evidence
+    if "$" in text:
+        score += 5
+
+    if "funded" in text:
+        score += 5
+
+    if "account" in text:
+        score += 5
+
+    # Strong penalty for obvious old material.
+    for word in EXCLUDE_WORDS:
+
+        if word in text:
+            score -= 40
+
+    score = max(0, min(score, 100))
+
+    return score
+
+
+# ============================================================
+# VALIDATE GIVEAWAY
+# ============================================================
+
+def analyse_entry(entry):
+
+    title = clean(entry.get("title", ""))
+    summary = clean(entry.get("summary", ""))
+    link = entry.get("link", "").strip()
+
+    if not title:
+        return None
+
+    if not recent_entry(entry):
+        return None
+
+    text = f"{title} {summary}"
+
+    text_lower = text.lower()
+
+    # Must contain giveaway evidence.
+    giveaway_hits = sum(
+        1
+        for word in GIVEAWAY_WORDS
+        if word in text_lower
+    )
+
+    if giveaway_hits == 0:
+        return None
+
+    # Must contain some prop-firm/trading evidence.
+    prop_context = (
+        "prop firm" in text_lower
+        or "prop trading" in text_lower
+        or "funded account" in text_lower
+        or "funded trader" in text_lower
+        or "trading challenge" in text_lower
+        or "propfirm" in text_lower
+        or any(
+            firm.lower() in text_lower
+            for firm in PROP_FIRMS
+        )
+    )
+
+    if not prop_context:
+        return None
+
+    # Reject obvious non-prop giveaways.
+    for word in EXCLUDE_WORDS:
+
+        if word in text_lower:
+            return None
+
+    score = score_item(title, summary)
+
+    if score < DISCOVERY_THRESHOLD:
+        return None
+
+    firm = identify_firm(text)
+
+    deadline = extract_deadline(text)
+
+    return {
+        "firm": firm,
+        "title": title,
+        "summary": summary[:1200],
+        "link": link,
+        "score": score,
+        "deadline": deadline,
+    }
+
+
+# ============================================================
+# ID
+# ============================================================
+
+def make_id(title, link):
+
+    raw = f"{title}|{link}".encode()
+
+    return hashlib.sha256(raw).hexdigest()
+
+
+# ============================================================
+# SEEN DATABASE
+# ============================================================
+
+def load_seen():
+
+    try:
+
+        with open(
+            SEEN_FILE,
+            "r",
+            encoding="utf-8"
+        ) as f:
+
+            return set(json.load(f))
+
+    except Exception:
+
+        return set()
+
+
+def save_seen(seen):
+
+    # Keep the file manageable.
+    recent = list(seen)[-5000:]
+
+    with open(
+        SEEN_FILE,
+        "w",
+        encoding="utf-8"
+    ) as f:
+
+        json.dump(
+            recent,
+            f,
+            indent=2
+        )
+
+
+# ============================================================
+# FORMAT ALERT
+# ============================================================
+
+def format_alert(item):
+
+    deadline = (
+        item["deadline"]
+        if item["deadline"]
+        else "Not detected"
+    )
+
+    return (
+        "🚨 ACTIVE PROP-FIRM GIVEAWAY\n\n"
+
+        f"🏢 Firm: {item['firm']}\n\n"
+
+        f"🎁 {item['title']}\n\n"
+
+        f"⭐ Confidence: {item['score']}/100\n\n"
+
+        f"📅 Deadline: {deadline}\n\n"
+
+        f"📝 {item['summary']}\n\n"
+
+        f"🔗 ENTER / SOURCE:\n{item['link']}"
+    )
+
+
+# ============================================================
+# SCANNER
+# ============================================================
+
+def scan():
 
     seen = load_seen()
 
     candidates = {}
 
-    # --------------------------------------------------------
-    # SEARCH
-    # --------------------------------------------------------
+    total_results = 0
+
+    print("=" * 60)
+    print("PROP-FIRM GIVEAWAY HUNTER")
+    print("=" * 60)
 
     for query in SEARCHES:
 
-        print(
-            f'Searching: "{query}"'
-        )
+        print(f'Searching: "{query}"')
 
-        feed = google_news(
-            query
-        )
+        feed = google_news(query)
 
         if not feed:
             continue
 
         for entry in feed.entries:
 
-            title = clean(
-                entry.get(
-                    "title",
-                    ""
-                )
-            )
+            total_results += 1
 
-            link = entry.get(
-                "link",
-                ""
-            )
-
-            uid = make_id(
-                title,
-                link
-            )
-
-            # Already processed
-            if uid in seen:
-                continue
-
-            item = classify(
-                entry
-            )
+            item = analyse_entry(entry)
 
             if not item:
                 continue
 
-            # Keep the best score
-            # if duplicate article appears
-            # in multiple searches.
-            if uid not in candidates:
-
-                candidates[uid] = item
-
-            else:
-
-                if (
-                    item["score"]
-                    >
-                    candidates[uid]["score"]
-                ):
-
-                    candidates[uid] = item
-
-    # --------------------------------------------------------
-    # SORT BY SCORE
-    # --------------------------------------------------------
-
-    candidates = dict(
-        sorted(
-            candidates.items(),
-            key=lambda x: x[1]["score"],
-            reverse=True
-        )
-    )
-
-    print(
-        f"QUALIFYING GIVEAWAYS: "
-        f"{len(candidates)}"
-    )
-
-    # --------------------------------------------------------
-    # NOTHING FOUND
-    # --------------------------------------------------------
-
-    if not candidates:
-
-        print(
-            "No qualifying giveaways found."
-        )
-
-        try:
-
-            send_telegram(
-                "🔎 Prop-Firm Giveaway Hunter\n\n"
-                "Scan completed successfully.\n\n"
-                "No qualifying active "
-                "prop-firm giveaways found.\n\n"
-                f"🔍 Discovery threshold: "
-                f"{DISCOVERY_SCORE}/100\n"
-                f"🚨 Alert threshold: "
-                f"{ALERT_SCORE}/100"
+            uid = make_id(
+                item["title"],
+                item["link"]
             )
 
-        except Exception as e:
+            # Avoid duplicate articles from multiple searches.
+            candidates[uid] = item
 
-            print(
-                "Telegram error:",
-                e
-            )
-
-        save_seen(
-            seen
-        )
-
-        return
+    print()
+    print(f"RAW RESULTS: {total_results}")
+    print(f"DISCOVERED CANDIDATES: {len(candidates)}")
 
     # --------------------------------------------------------
-    # SEND RESULTS
+    # Alert qualifying items
     # --------------------------------------------------------
+
+    alerts = []
 
     for uid, item in candidates.items():
 
-        score = item["score"]
+        if item["score"] < ALERT_THRESHOLD:
+            continue
 
-        deadline = (
-            item["deadline"]
-            if item["deadline"]
-            else "Not detected"
+        if uid in seen:
+            continue
+
+        alerts.append(
+            (uid, item)
         )
 
-        # ====================================================
-        # HIGH CONFIDENCE
-        # ====================================================
+    print(
+        f"QUALIFYING ALERTS: {len(alerts)}"
+    )
 
-        if score >= ALERT_SCORE:
+    # --------------------------------------------------------
+    # Send alerts
+    # --------------------------------------------------------
 
-            message = (
-
-                "🚨 ACTIVE PROP-FIRM GIVEAWAY\n\n"
-
-                f"🏢 Firm: "
-                f"{item['firm']}\n\n"
-
-                f"🎁 {item['title']}\n\n"
-
-                f"⭐ Confidence: "
-                f"{score}/100\n\n"
-
-                f"📅 Deadline: "
-                f"{deadline}\n\n"
-
-                f"📝 {item['summary']}\n\n"
-
-                f"🔗 ENTER / SOURCE:\n"
-                f"{item['link']}"
-            )
-
-        # ====================================================
-        # POSSIBLE GIVEAWAY
-        # ====================================================
-
-        else:
-
-            message = (
-
-                "🔍 POSSIBLE PROP-FIRM GIVEAWAY\n\n"
-
-                f"🏢 Firm: "
-                f"{item['firm']}\n\n"
-
-                f"🎁 {item['title']}\n\n"
-
-                f"⭐ Confidence: "
-                f"{score}/100\n\n"
-
-                "⚠️ Manual verification recommended.\n\n"
-
-                f"📅 Deadline: "
-                f"{deadline}\n\n"
-
-                f"📝 {item['summary']}\n\n"
-
-                f"🔗 SOURCE:\n"
-                f"{item['link']}"
-            )
-
-        # ----------------------------------------------------
-        # TELEGRAM
-        # ----------------------------------------------------
+    for uid, item in alerts:
 
         try:
 
-            send_telegram(
-                message
-            )
+            message = format_alert(item)
+
+            send_telegram(message)
 
             print(
                 f"TELEGRAM SENT | "
                 f"{item['firm']} | "
-                f"{score}/100"
+                f"{item['score']}/100"
             )
 
-            # Mark as seen ONLY after successful
-            # Telegram delivery.
             seen.add(uid)
 
         except Exception as e:
 
             print(
-                "Telegram error:",
+                "TELEGRAM ERROR:",
                 e
             )
 
+    save_seen(seen)
+
     # --------------------------------------------------------
-    # SAVE SEEN
+    # Scan summary
     # --------------------------------------------------------
 
-    save_seen(
-        seen
-    )
+    if alerts:
+
+        summary = (
+            "🔎 Prop-Firm Giveaway Hunter\n\n"
+            f"Scan completed successfully.\n\n"
+            f"🚨 New qualifying giveaways: "
+            f"{len(alerts)}\n\n"
+            f"🔎 Discovery threshold: "
+            f"{DISCOVERY_THRESHOLD}/100\n"
+            f"🚨 Alert threshold: "
+            f"{ALERT_THRESHOLD}/100"
+        )
+
+    else:
+
+        summary = (
+            "🔎 Prop-Firm Giveaway Hunter\n\n"
+            "Scan completed successfully.\n\n"
+            "No new qualifying active "
+            "prop-firm giveaways found.\n\n"
+            f"🔎 Discovery threshold: "
+            f"{DISCOVERY_THRESHOLD}/100\n"
+            f"🚨 Alert threshold: "
+            f"{ALERT_THRESHOLD}/100\n\n"
+            f"📰 Results scanned: "
+            f"{total_results}\n"
+            f"🎯 Candidates discovered: "
+            f"{len(candidates)}"
+        )
+
+    try:
+
+        send_telegram(summary)
+
+    except Exception as e:
+
+        print(
+            "SUMMARY TELEGRAM ERROR:",
+            e
+        )
 
 
 # ============================================================
-# START
+# MAIN
 # ============================================================
 
 if __name__ == "__main__":
-    main()
+
+    try:
+
+        scan()
+
+    except Exception as e:
+
+        print(
+            "FATAL SCANNER ERROR:",
+            repr(e)
+        )
+
+        # Try to notify Telegram.
+        try:
+
+            send_telegram(
+                "❌ Prop-Firm Giveaway Hunter ERROR\n\n"
+                f"{e}"
+            )
+
+        except Exception:
+            pass
+
+        raise
