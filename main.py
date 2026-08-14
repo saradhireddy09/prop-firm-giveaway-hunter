@@ -9,39 +9,75 @@ from urllib.parse import quote
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
-MIN_SCORE = int(os.getenv("MIN_SCORE", "50"))
-
 SEEN_FILE = "seen.json"
 
-KEYWORDS = [
-    "prop firm giveaway",
-    "prop firm free challenge",
-    "funded account giveaway",
-    "free funded account",
-    "free prop firm challenge",
-    "prop firm contest",
-    "trading account giveaway",
-    "funded trader giveaway",
+PROP_FIRMS = [
+    "FXIFY",
+    "The5ers",
+    "E8 Markets",
+    "FundingPips",
+    "FundedNext",
+    "Funded Trading Plus",
+    "Hola Prime",
+    "Funded Trading Markets",
+    "Funded Firm",
+    "FTUK",
+    "Topstep",
+    "Apex Trader Funding",
+    "Tradeify",
+    "MyFundedFX",
 ]
 
-POSITIVE_WORDS = [
+SEARCHES = [
+    '"prop firm" giveaway',
+    '"funded account" giveaway',
+    '"free challenge" prop firm',
+    '"free funded account" trading',
+    '"prop firm" contest',
+    '"trading account" giveaway',
+    '"funded trader" giveaway',
+]
+
+POSITIVE = [
     "giveaway",
+    "contest",
+    "sweepstakes",
     "free challenge",
     "free account",
+    "free funded account",
+    "win a funded account",
+    "win a challenge",
     "funded account",
-    "contest",
-    "raffle",
-    "promo",
-    "win",
+    "prize",
 ]
 
-NEGATIVE_WORDS = [
-    "review",
-    "comparison",
-    "coupon",
-    "discount",
-    "affiliate",
-    "how to",
+ENTRY_WORDS = [
+    "enter",
+    "entry",
+    "join",
+    "register",
+    "sign up",
+    "follow",
+    "retweet",
+    "deadline",
+    "ends",
+]
+
+NOISE = [
+    "nasdaq trading",
+    "live trading",
+    "day trading",
+    "scalping",
+    "trading stream",
+    "youtube",
+    "webinar",
+    "expo",
+    "conference",
+    "biden",
+    "wall street",
+    "stock market news",
+    "market analysis",
+    "technical analysis",
 ]
 
 
@@ -55,60 +91,83 @@ def load_seen():
 
 def save_seen(seen):
     with open(SEEN_FILE, "w", encoding="utf-8") as f:
-        json.dump(list(seen)[-2000:], f, indent=2)
+        json.dump(list(seen)[-3000:], f)
 
 
-def make_id(title, link):
-    raw = f"{title}|{link}"
-    return hashlib.sha256(raw.encode()).hexdigest()
+def clean(text):
+    return BeautifulSoup(text or "", "html.parser").get_text(
+        " ", strip=True
+    )
 
 
-def score_item(title, summary):
+def item_id(title, link):
+    return hashlib.sha256(
+        f"{title}|{link}".encode()
+    ).hexdigest()
+
+
+def identify_prop_firm(text):
+    for firm in PROP_FIRMS:
+        if firm.lower() in text.lower():
+            return firm
+    return None
+
+
+def score(title, summary):
     text = f"{title} {summary}".lower()
+
+    firm = identify_prop_firm(text)
+
+    positive_hits = sum(
+        1 for word in POSITIVE if word in text
+    )
+
+    entry_hits = sum(
+        1 for word in ENTRY_WORDS if word in text
+    )
+
+    noise_hits = sum(
+        1 for word in NOISE if word in text
+    )
 
     score = 0
 
-    for word in POSITIVE_WORDS:
-        if word in text:
-            score += 20
+    if firm:
+        score += 40
 
-    for word in NEGATIVE_WORDS:
-        if word in text:
-            score -= 15
-
-    if "prop firm" in text:
-        score += 20
-
-    if "funded" in text:
-        score += 15
+    score += min(positive_hits * 15, 45)
+    score += min(entry_hits * 5, 15)
 
     if "$" in text:
         score += 10
 
-    return score
+    if "funded account" in text:
+        score += 20
+
+    if "free challenge" in text:
+        score += 20
+
+    score -= noise_hits * 25
+
+    return max(score, 0), firm
 
 
-def clean_text(text):
-    soup = BeautifulSoup(text or "", "html.parser")
-    return soup.get_text(" ", strip=True)
-
-
-def google_news_feed(query):
+def google_news(query):
     url = (
         "https://news.google.com/rss/search?"
         f"q={quote(query)}&hl=en-IN&gl=IN&ceid=IN:en"
     )
 
     try:
-        response = requests.get(
+        r = requests.get(
             url,
             timeout=20,
             headers={"User-Agent": "Mozilla/5.0"}
         )
-        response.raise_for_status()
-        return feedparser.parse(response.content)
+        r.raise_for_status()
+        return feedparser.parse(r.content)
     except Exception as e:
-        print(f"Feed error: {e}")
+        print("Feed error:", e)
         return None
 
 
@@ -118,7 +177,7 @@ def send_telegram(message):
         f"{TELEGRAM_BOT_TOKEN}/sendMessage"
     )
 
-    response = requests.post(
+    r = requests.post(
         url,
         data={
             "chat_id": TELEGRAM_CHAT_ID,
@@ -128,74 +187,84 @@ def send_telegram(message):
         timeout=20,
     )
 
-    response.raise_for_status()
+    r.raise_for_status()
 
 
 def main():
-    seen = load_seen()
-    found = []
 
-    for query in KEYWORDS:
+    seen = load_seen()
+    alerts = {}
+
+    for query in SEARCHES:
+
         print(f"Searching: {query}")
 
-        feed = google_news_feed(query)
+        feed = google_news(query)
 
         if not feed:
             continue
 
-        for item in feed.entries:
-            title = clean_text(item.get("title", ""))
-            summary = clean_text(item.get("summary", ""))
-            link = item.get("link", "")
+        for entry in feed.entries:
+
+            title = clean(entry.get("title", ""))
+            summary = clean(entry.get("summary", ""))
+            link = entry.get("link", "")
 
             if not title or not link:
                 continue
 
-            item_id = make_id(title, link)
+            text = f"{title} {summary}"
 
-            if item_id in seen:
+            uid = item_id(title, link)
+
+            if uid in seen:
                 continue
 
-            score = score_item(title, summary)
+            result_score, firm = score(title, summary)
 
-            print(f"{score} | {title}")
+            print(
+                f"{result_score:3} | "
+                f"{firm or 'Unknown'} | "
+                f"{title}"
+            )
 
-            if score >= MIN_SCORE:
-                found.append({
-                    "id": item_id,
+            # Strict qualification
+            if firm and result_score >= 60:
+
+                alerts[uid] = {
                     "title": title,
-                    "summary": summary[:500],
+                    "summary": summary[:700],
                     "link": link,
-                    "score": score,
-                })
+                    "firm": firm,
+                    "score": result_score,
+                }
 
-    # Remove duplicates found across multiple searches
-    unique = {}
+    print(f"\nQualified alerts: {len(alerts)}")
 
-    for item in found:
-        unique[item["id"]] = item
+    for uid, alert in alerts.items():
 
-    found = list(unique.values())
-
-    print(f"New alerts: {len(found)}")
-
-    for item in found:
         message = (
-            "🚨 PROP-FIRM GIVEAWAY FOUND\n\n"
-            f"🏢 {item['title']}\n\n"
-            f"⭐ Score: {item['score']}\n\n"
-            f"📝 {item['summary']}\n\n"
-            f"🔗 {item['link']}"
+            "🚨 NEW PROP-FIRM GIVEAWAY\n\n"
+            f"🏢 Prop Firm: {alert['firm']}\n\n"
+            f"🎁 {alert['title']}\n\n"
+            f"⭐ Confidence Score: {alert['score']}\n\n"
+            f"📝 {alert['summary']}\n\n"
+            f"🔗 {alert['link']}"
         )
 
         try:
-            send_telegram(message)
-            print("Telegram alert sent")
 
-            seen.add(item["id"])
+            send_telegram(message)
+
+            print(
+                f"Telegram alert sent: "
+                f"{alert['firm']}"
+            )
+
+            seen.add(uid)
 
         except Exception as e:
-            print(f"Telegram error: {e}")
+            print("Telegram error:", e)
 
     save_seen(seen)
 
