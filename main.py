@@ -1,146 +1,204 @@
-import os, json, re
-from urllib.parse import urlparse
+import os
+import json
+import hashlib
 import requests
 import feedparser
 from bs4 import BeautifulSoup
-from dotenv import load_dotenv
+from urllib.parse import quote
 
-load_dotenv()
+TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
-CONFIG = json.load(open("config.json", encoding="utf-8"))
+MIN_SCORE = int(os.getenv("MIN_SCORE", "50"))
+
 SEEN_FILE = "seen.json"
-MIN_SCORE = int(os.getenv("MIN_SCORE", "70"))
 
-FREE_TERMS = [
-    "free", "100% free", "no cost", "zero cost", "free account",
-    "free challenge", "free funded"
+KEYWORDS = [
+    "prop firm giveaway",
+    "prop firm free challenge",
+    "funded account giveaway",
+    "free funded account",
+    "free prop firm challenge",
+    "prop firm contest",
+    "trading account giveaway",
+    "funded trader giveaway",
 ]
-PROP_TERMS = [
-    "prop firm", "funded account", "funded trader", "trading challenge",
-    "propfirm", "funding"
+
+POSITIVE_WORDS = [
+    "giveaway",
+    "free challenge",
+    "free account",
+    "funded account",
+    "contest",
+    "raffle",
+    "promo",
+    "win",
 ]
-PAYMENT_TERMS = [
-    "buy", "purchase", "pay", "payment", "fee", "deposit",
-    "activation fee", "challenge fee", "discount"
+
+NEGATIVE_WORDS = [
+    "review",
+    "comparison",
+    "coupon",
+    "discount",
+    "affiliate",
+    "how to",
 ]
-SCAM_TERMS = [
-    "wallet", "seed phrase", "private key", "send crypto",
-    "verification payment", "withdrawal fee"
-]
+
 
 def load_seen():
     try:
-        return set(json.load(open(SEEN_FILE, encoding="utf-8")))
+        with open(SEEN_FILE, "r", encoding="utf-8") as f:
+            return set(json.load(f))
     except Exception:
         return set()
 
+
 def save_seen(seen):
-    # Keep state bounded.
-    data = list(seen)[-3000:]
     with open(SEEN_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+        json.dump(list(seen)[-2000:], f, indent=2)
 
-def clean(text):
-    return re.sub(r"\s+", " ", BeautifulSoup(text or "", "html.parser").get_text(" ")).strip()
 
-def score(title, summary, link):
+def make_id(title, link):
+    raw = f"{title}|{link}"
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def score_item(title, summary):
     text = f"{title} {summary}".lower()
-    s = 0
-    reasons = []
 
-    if any(x in text for x in FREE_TERMS):
-        s += 25; reasons.append("free wording")
-    if any(x in text for x in PROP_TERMS):
-        s += 25; reasons.append("prop/funded wording")
-    if re.search(r"\$\s?(?:5|10|25|50|100)[kK]\b", text):
-        s += 15; reasons.append("account size detected")
-    if any(x in text for x in ["giveaway", "give away", "win a"]):
-        s += 15; reasons.append("giveaway detected")
-    if any(x in text for x in ["deadline", "ends", "closing", "expires"]):
-        s += 5; reasons.append("deadline wording")
-    if "india" in text or "worldwide" in text or "global" in text:
-        s += 5; reasons.append("eligibility wording")
+    score = 0
 
-    # Penalize language suggesting it is not actually free.
-    payment_hits = sum(1 for x in PAYMENT_TERMS if x in text)
-    if payment_hits:
-        s -= min(35, payment_hits * 7)
-        reasons.append("possible payment requirement")
+    for word in POSITIVE_WORDS:
+        if word in text:
+            score += 20
 
-    scam_hits = sum(1 for x in SCAM_TERMS if x in text)
-    if scam_hits:
-        s -= 50
-        reasons.append("high-risk/scam wording")
+    for word in NEGATIVE_WORDS:
+        if word in text:
+            score -= 15
 
-    domain = urlparse(link).netloc.lower()
-    if domain:
-        reasons.append(domain)
+    if "prop firm" in text:
+        score += 20
 
-    return max(0, min(100, s)), reasons
+    if "funded" in text:
+        score += 15
 
-def fetch_feed(url):
+    if "$" in text:
+        score += 10
+
+    return score
+
+
+def clean_text(text):
+    soup = BeautifulSoup(text or "", "html.parser")
+    return soup.get_text(" ", strip=True)
+
+
+def google_news_feed(query):
+    url = (
+        "https://news.google.com/rss/search?"
+        f"q={quote(query)}&hl=en-IN&gl=IN&ceid=IN:en"
+    )
+
     try:
-        feed = feedparser.parse(url)
-        out = []
-        for e in feed.entries[:30]:
-            title = clean(getattr(e, "title", ""))
-            summary = clean(getattr(e, "summary", ""))
-            link = getattr(e, "link", "")
-            if title and link:
-                out.append((title, summary, link))
-        return out
-    except Exception as exc:
-        print("Feed error:", url, exc)
-        return []
+        response = requests.get(
+            url,
+            timeout=20,
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+        response.raise_for_status()
+        return feedparser.parse(response.content)
+    except Exception as e:
+        print(f"Feed error: {e}")
+        return None
 
-def telegram(message):
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    if not token or not chat_id:
-        print("\nTELEGRAM NOT CONFIGURED\n" + message)
-        return
 
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    r = requests.post(url, data={"chat_id": chat_id, "text": message}, timeout=20)
-    r.raise_for_status()
+def send_telegram(message):
+    url = (
+        f"https://api.telegram.org/bot"
+        f"{TELEGRAM_BOT_TOKEN}/sendMessage"
+    )
+
+    response = requests.post(
+        url,
+        data={
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": message,
+            "disable_web_page_preview": False,
+        },
+        timeout=20,
+    )
+
+    response.raise_for_status()
+
 
 def main():
     seen = load_seen()
-    new_seen = set(seen)
-    alerts = []
+    found = []
 
-    for feed_url in CONFIG["feeds"]:
-        for title, summary, link in fetch_feed(feed_url):
-            uid = link.split("#")[0]
-            if uid in seen:
+    for query in KEYWORDS:
+        print(f"Searching: {query}")
+
+        feed = google_news_feed(query)
+
+        if not feed:
+            continue
+
+        for item in feed.entries:
+            title = clean_text(item.get("title", ""))
+            summary = clean_text(item.get("summary", ""))
+            link = item.get("link", "")
+
+            if not title or not link:
                 continue
 
-            text = f"{title} {summary}".lower()
-            if not any(k.lower() in text for k in CONFIG["keywords"]):
-                new_seen.add(uid)
+            item_id = make_id(title, link)
+
+            if item_id in seen:
                 continue
 
-            s, reasons = score(title, summary, link)
-            new_seen.add(uid)
+            score = score_item(title, summary)
 
-            if s >= MIN_SCORE:
-                alerts.append((s, title, link, reasons))
+            print(f"{score} | {title}")
 
-    alerts.sort(reverse=True, key=lambda x: x[0])
+            if score >= MIN_SCORE:
+                found.append({
+                    "id": item_id,
+                    "title": title,
+                    "summary": summary[:500],
+                    "link": link,
+                    "score": score,
+                })
 
-    for s, title, link, reasons in alerts[:10]:
-        msg = (
-            f"🚨 PROP-FIRM GIVEAWAY\\n\\n"
-            f"⭐ Score: {s}/100\\n"
-            f"🎁 {title}\\n\\n"
-            f"🔎 {', '.join(reasons[:6])}\\n\\n"
-            f"🔗 {link}\\n\\n"
-            f"⚠️ Verify the official firm and requirements before entering."
+    # Remove duplicates found across multiple searches
+    unique = {}
+
+    for item in found:
+        unique[item["id"]] = item
+
+    found = list(unique.values())
+
+    print(f"New alerts: {len(found)}")
+
+    for item in found:
+        message = (
+            "🚨 PROP-FIRM GIVEAWAY FOUND\n\n"
+            f"🏢 {item['title']}\n\n"
+            f"⭐ Score: {item['score']}\n\n"
+            f"📝 {item['summary']}\n\n"
+            f"🔗 {item['link']}"
         )
-        telegram(msg)
 
-    save_seen(new_seen)
-    print(f"Scanned feeds. New alerts: {len(alerts)}")
+        try:
+            send_telegram(message)
+            print("Telegram alert sent")
+
+            seen.add(item["id"])
+
+        except Exception as e:
+            print(f"Telegram error: {e}")
+
+    save_seen(seen)
+
 
 if __name__ == "__main__":
     main()
