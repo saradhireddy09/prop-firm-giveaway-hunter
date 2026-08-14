@@ -2,7 +2,6 @@ import os
 import re
 import json
 import hashlib
-import html
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote_plus
 
@@ -12,7 +11,7 @@ from bs4 import BeautifulSoup
 
 
 # ============================================================
-# CONFIGURATION
+# SETTINGS
 # ============================================================
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
@@ -21,18 +20,25 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 DISCOVERY_THRESHOLD = int(os.getenv("DISCOVERY_SCORE", "50"))
 ALERT_THRESHOLD = int(os.getenv("MIN_SCORE", "70"))
 
-MAX_AGE_DAYS = int(os.getenv("MAX_AGE_DAYS", "14"))
+MAX_AGE_DAYS = int(os.getenv("MAX_AGE_DAYS", "30"))
 
 SEEN_FILE = "seen.json"
 
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) "
+        "AppleWebKit/537.36 "
+        "Chrome/120 Safari/537.36"
+    )
+}
+
 
 # ============================================================
-# SEARCH QUERIES
+# SEARCHES
 # ============================================================
 
-SEARCHES = [
+GENERIC_SEARCHES = [
     '"prop firm" giveaway',
-    '"prop firm" giveaway 2026',
     '"prop firm" contest',
     '"prop firm" competition',
     '"prop trading" giveaway',
@@ -40,19 +46,43 @@ SEARCHES = [
     '"funded account" giveaway',
     '"funded account" contest',
     '"funded trader" giveaway',
-    '"funded trader" contest',
     '"free prop firm" challenge',
     '"free funded account" challenge',
     '"trading challenge" giveaway',
     '"prop firm" sweepstakes',
     '"trading account" giveaway',
-    '"funded account" free',
-    '"free trading challenge" prop firm',
+    '"free trading challenge"',
 ]
 
 
+FIRM_SEARCHES = [
+    '"FTMO" giveaway',
+    '"FundedNext" giveaway',
+    '"The5ers" giveaway',
+    '"FundingPips" giveaway',
+    '"E8 Markets" giveaway',
+    '"Tradeify" giveaway',
+    '"Funded Trading Plus" giveaway',
+    '"FXIFY" giveaway',
+    '"Funded Trader Markets" giveaway',
+    '"Hola Prime" giveaway',
+    '"FundedFirm" giveaway',
+    '"Apex Trader Funding" giveaway',
+    '"Topstep" giveaway',
+    '"Blue Guardian" giveaway',
+    '"Alpha Capital Group" giveaway',
+    '"The Funded Trader" giveaway',
+    '"Goat Funded Trader" giveaway',
+    '"OneUp Trader" giveaway',
+    '"Bulenox" giveaway',
+]
+
+
+SEARCHES = GENERIC_SEARCHES + FIRM_SEARCHES
+
+
 # ============================================================
-# KNOWN PROP FIRMS
+# PROP FIRMS
 # ============================================================
 
 PROP_FIRMS = [
@@ -62,39 +92,31 @@ PROP_FIRMS = [
     "FundingPips",
     "E8 Markets",
     "E8",
-    "Funded Trading Plus",
-    "Funded Trader Markets",
-    "FundedFirm",
-    "Hola Prime",
     "Tradeify",
-    "MyFundedFX",
-    "Topstep",
-    "Apex Trader Funding",
-    "Apex",
-    "Take Profit Trader",
-    "MFF",
-    "MFFX",
-    "Futures Elite",
-    "FXIFY",
-    "Blue Guardian",
-    "Goat Funded Trader",
-    "Instant Funding",
     "Funded Trading Plus",
-    "Lux Trading Firm",
+    "FXIFY",
+    "Funded Trader Markets",
+    "Hola Prime",
+    "FundedFirm",
+    "Apex Trader Funding",
+    "Topstep",
+    "Blue Guardian",
     "Alpha Capital Group",
     "The Funded Trader",
-    "Funding Traders",
-    "Finotive Funding",
-    "Ment Funding",
-    "DNA Funded",
-    "FundedNext",
+    "Goat Funded Trader",
     "OneUp Trader",
     "Bulenox",
+    "Finotive Funding",
+    "Funding Traders",
+    "Ment Funding",
+    "DNA Funded",
+    "Lux Trading Firm",
+    "Instant Funding",
 ]
 
 
 # ============================================================
-# GIVEAWAY / ENTRY WORDS
+# KEYWORDS
 # ============================================================
 
 GIVEAWAY_WORDS = [
@@ -108,7 +130,6 @@ GIVEAWAY_WORDS = [
     "free account",
     "free funded account",
     "free challenge",
-    "free prop firm challenge",
     "free trading account",
 ]
 
@@ -118,16 +139,17 @@ ENTRY_WORDS = [
     "entry",
     "join",
     "register",
+    "registration",
     "participate",
     "sign up",
     "signup",
-    "retweet",
-    "repost",
     "follow",
     "like",
     "comment",
     "share",
     "tag",
+    "retweet",
+    "repost",
     "competition",
     "contest",
 ]
@@ -135,7 +157,6 @@ ENTRY_WORDS = [
 
 ACTIVE_WORDS = [
     "open now",
-    "open",
     "ongoing",
     "active",
     "currently",
@@ -144,45 +165,34 @@ ACTIVE_WORDS = [
     "registration open",
     "register now",
     "join now",
-    "ends",
     "deadline",
+    "ends",
+    "ending",
     "until",
     "closes",
     "closing",
     "last chance",
-    "still available",
 ]
 
 
-EXCLUDE_WORDS = [
+EXPIRED_WORDS = [
     "ended",
-    "ends 2024",
-    "ended 2024",
-    "ends 2025",
-    "ended 2025",
-    "2024 giveaway",
-    "2025 giveaway",
-    "historical",
-    "old giveaway",
+    "has ended",
+    "previous giveaway",
     "past giveaway",
-    "crypto airdrop",
-    "token giveaway",
-    "nft giveaway",
-    "casino",
-    "sports betting",
+    "old giveaway",
+    "historical giveaway",
 ]
 
 
-# ============================================================
-# HTTP
-# ============================================================
-
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (X11; Linux x86_64) "
-        "AppleWebKit/537.36 Chrome/120 Safari/537.36"
-    )
-}
+NON_PROP_WORDS = [
+    "casino",
+    "betting",
+    "nft",
+    "token airdrop",
+    "crypto airdrop",
+    "lottery",
+]
 
 
 # ============================================================
@@ -190,11 +200,12 @@ HEADERS = {
 # ============================================================
 
 def send_telegram(message):
+
     if not TELEGRAM_BOT_TOKEN:
-        raise RuntimeError("TELEGRAM_BOT_TOKEN is missing")
+        raise RuntimeError("TELEGRAM_BOT_TOKEN missing")
 
     if not TELEGRAM_CHAT_ID:
-        raise RuntimeError("TELEGRAM_CHAT_ID is missing")
+        raise RuntimeError("TELEGRAM_CHAT_ID missing")
 
     url = (
         f"https://api.telegram.org/bot"
@@ -216,37 +227,21 @@ def send_telegram(message):
     data = response.json()
 
     if not data.get("ok"):
-        raise RuntimeError(f"Telegram API error: {data}")
-
-    return True
+        raise RuntimeError(str(data))
 
 
 # ============================================================
-# TELEGRAM CONNECTION TEST
-# ============================================================
-
-def telegram_test():
-    message = (
-        "✅ Prop-Firm Giveaway Hunter\n\n"
-        "Telegram connection test successful.\n"
-        f"Discovery threshold: {DISCOVERY_THRESHOLD}/100\n"
-        f"Alert threshold: {ALERT_THRESHOLD}/100"
-    )
-
-    send_telegram(message)
-
-
-# ============================================================
-# GOOGLE NEWS RSS
+# GOOGLE NEWS
 # ============================================================
 
 def google_news(query):
+
     try:
-        encoded = quote_plus(query)
 
         url = (
             "https://news.google.com/rss/search?"
-            f"q={encoded}&hl=en-US&gl=US&ceid=US:en"
+            f"q={quote_plus(query)}"
+            "&hl=en-US&gl=US&ceid=US:en"
         )
 
         response = requests.get(
@@ -260,7 +255,9 @@ def google_news(query):
         return feedparser.parse(response.content)
 
     except Exception as e:
-        print("Feed error:", e)
+
+        print("FEED ERROR:", e)
+
         return None
 
 
@@ -269,24 +266,76 @@ def google_news(query):
 # ============================================================
 
 def clean(text):
+
     if not text:
         return ""
-
-    text = html.unescape(text)
 
     soup = BeautifulSoup(
         text,
         "html.parser"
     )
 
-    return soup.get_text(" ", strip=True)
+    return soup.get_text(
+        " ",
+        strip=True
+    )
+
+
+# ============================================================
+# ARTICLE FETCH
+# ============================================================
+
+def fetch_article(url):
+
+    if not url:
+        return ""
+
+    try:
+
+        response = requests.get(
+            url,
+            headers=HEADERS,
+            timeout=15,
+            allow_redirects=True,
+        )
+
+        if response.status_code != 200:
+            return ""
+
+        soup = BeautifulSoup(
+            response.text,
+            "html.parser"
+        )
+
+        # Remove unnecessary sections.
+        for tag in soup([
+            "script",
+            "style",
+            "nav",
+            "footer",
+            "header",
+            "form",
+            "aside",
+        ]):
+            tag.decompose()
+
+        text = soup.get_text(
+            " ",
+            strip=True
+        )
+
+        return text[:15000]
+
+    except Exception:
+
+        return ""
 
 
 # ============================================================
 # RECENCY
 # ============================================================
 
-def recent_entry(entry):
+def is_recent(entry):
 
     try:
 
@@ -297,49 +346,56 @@ def recent_entry(entry):
                 tzinfo=timezone.utc
             )
 
-            age = datetime.now(timezone.utc) - published
+            age = (
+                datetime.now(timezone.utc)
+                - published
+            )
 
-            return age <= timedelta(days=MAX_AGE_DAYS)
+            return age <= timedelta(
+                days=MAX_AGE_DAYS
+            )
 
     except Exception:
         pass
 
-    # If date cannot be read, keep it.
     return True
 
 
 # ============================================================
-# IDENTIFY FIRM
+# FIRM IDENTIFICATION
 # ============================================================
 
 def identify_firm(text):
 
-    text_lower = text.lower()
+    lower = text.lower()
 
-    # First check known firms.
     for firm in PROP_FIRMS:
 
-        if firm.lower() in text_lower:
+        if firm.lower() in lower:
             return firm
 
-    # Try common generic firm names.
+    # Generic prop-firm name detection.
     patterns = [
-        r"\b([A-Z][A-Za-z0-9&.-]{2,30}\s+(?:Markets|Funding|Capital|Trading|Trader|Firm))\b",
-        r"\b([A-Z][A-Za-z0-9&.-]{2,30}\s+Prop)\b",
+        r"\b[A-Z][A-Za-z0-9&.-]{2,30}\s+(?:Funding|Markets|Capital)\b",
+        r"\b[A-Z][A-Za-z0-9&.-]{2,30}\s+Trading\b",
+        r"\b[A-Z][A-Za-z0-9&.-]{2,30}\s+Trader\b",
     ]
 
     for pattern in patterns:
 
-        match = re.search(pattern, text)
+        match = re.search(
+            pattern,
+            text
+        )
 
         if match:
-            return match.group(1).strip()
+            return match.group(0)
 
-    return "Unknown Prop Firm"
+    return "Unknown"
 
 
 # ============================================================
-# DEADLINE EXTRACTION
+# DEADLINE
 # ============================================================
 
 def extract_deadline(text):
@@ -347,15 +403,16 @@ def extract_deadline(text):
     patterns = [
 
         r"(?:deadline|ends?|ending|closes?|closing)"
-        r"\s*(?:on|:|-)?\s*"
-        r"([A-Z][a-z]+\s+\d{1,2}(?:,\s*\d{4})?)",
+        r"\s*(?:on|at|:|-)?\s*"
+        r"([A-Za-z]+\s+\d{1,2}"
+        r"(?:,\s*\d{4})?)",
 
         r"(?:deadline|ends?|ending|closes?|closing)"
-        r"\s*(?:on|:|-)?\s*"
+        r"\s*(?:on|at|:|-)?\s*"
         r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})",
 
         r"(?:deadline|ends?|ending|closes?|closing)"
-        r"\s*(?:on|:|-)?\s*"
+        r"\s*(?:on|at|:|-)?\s*"
         r"(\d{4}-\d{2}-\d{2})",
     ]
 
@@ -364,7 +421,7 @@ def extract_deadline(text):
         match = re.search(
             pattern,
             text,
-            flags=re.IGNORECASE
+            re.IGNORECASE
         )
 
         if match:
@@ -377,135 +434,240 @@ def extract_deadline(text):
 # SCORE
 # ============================================================
 
-def score_item(title, summary):
+def calculate_score(
+    title,
+    summary,
+    article,
+):
 
-    text = f"{title} {summary}".lower()
+    text = (
+        f"{title} "
+        f"{summary} "
+        f"{article}"
+    )
+
+    lower = text.lower()
+
+    score = 0
 
     giveaway_hits = sum(
         1
         for word in GIVEAWAY_WORDS
-        if word in text
+        if word in lower
     )
 
     entry_hits = sum(
         1
         for word in ENTRY_WORDS
-        if word in text
+        if word in lower
     )
 
     active_hits = sum(
         1
         for word in ACTIVE_WORDS
-        if word in text
+        if word in lower
     )
 
-    prop_hits = sum(
+    firm_hits = sum(
         1
         for firm in PROP_FIRMS
-        if firm.lower() in text
+        if firm.lower() in lower
     )
 
-    score = 0
+    prop_context = any(
+        word in lower
+        for word in [
+            "prop firm",
+            "prop trading",
+            "funded account",
+            "funded trader",
+            "trading challenge",
+            "funding firm",
+        ]
+    )
 
+    # --------------------------------------------------------
     # Giveaway evidence
-    score += min(giveaway_hits * 15, 30)
+    # --------------------------------------------------------
 
-    # Entry/action evidence
-    score += min(entry_hits * 8, 20)
+    score += min(
+        giveaway_hits * 15,
+        30
+    )
 
+    # --------------------------------------------------------
+    # Entry evidence
+    # --------------------------------------------------------
+
+    score += min(
+        entry_hits * 8,
+        20
+    )
+
+    # --------------------------------------------------------
     # Active evidence
-    score += min(active_hits * 10, 20)
+    # --------------------------------------------------------
 
-    # Prop-firm evidence
-    score += min(prop_hits * 15, 30)
+    score += min(
+        active_hits * 10,
+        20
+    )
 
-    # Money/prize evidence
+    # --------------------------------------------------------
+    # Known firm
+    # --------------------------------------------------------
+
+    score += min(
+        firm_hits * 20,
+        30
+    )
+
+    # --------------------------------------------------------
+    # Prop context
+    # --------------------------------------------------------
+
+    if prop_context:
+        score += 10
+
+    # --------------------------------------------------------
+    # Prize / account evidence
+    # --------------------------------------------------------
+
     if "$" in text:
         score += 5
 
-    if "funded" in text:
+    if "funded" in lower:
         score += 5
 
-    if "account" in text:
+    if "account" in lower:
         score += 5
 
-    # Strong penalty for obvious old material.
-    for word in EXCLUDE_WORDS:
+    if "free" in lower:
+        score += 5
 
-        if word in text:
-            score -= 40
+    # --------------------------------------------------------
+    # Penalties
+    # --------------------------------------------------------
 
-    score = max(0, min(score, 100))
+    for word in NON_PROP_WORDS:
 
-    return score
+        if word in lower:
+            score -= 30
+
+    for word in EXPIRED_WORDS:
+
+        if word in lower:
+            score -= 45
+
+    return max(
+        0,
+        min(score, 100)
+    )
 
 
 # ============================================================
-# VALIDATE GIVEAWAY
+# CANDIDATE ANALYSIS
 # ============================================================
 
 def analyse_entry(entry):
 
-    title = clean(entry.get("title", ""))
-    summary = clean(entry.get("summary", ""))
-    link = entry.get("link", "").strip()
+    title = clean(
+        entry.get("title", "")
+    )
+
+    summary = clean(
+        entry.get("summary", "")
+    )
+
+    link = entry.get(
+        "link",
+        ""
+    ).strip()
 
     if not title:
         return None
 
-    if not recent_entry(entry):
+    if not is_recent(entry):
         return None
 
-    text = f"{title} {summary}"
+    # --------------------------------------------------------
+    # IMPORTANT:
+    # Do NOT reject here just because the RSS title
+    # doesn't contain "giveaway".
+    #
+    # Fetch article and inspect the full content.
+    # --------------------------------------------------------
 
-    text_lower = text.lower()
+    article = fetch_article(link)
 
-    # Must contain giveaway evidence.
+    combined = (
+        f"{title} "
+        f"{summary} "
+        f"{article}"
+    )
+
+    lower = combined.lower()
+
     giveaway_hits = sum(
         1
         for word in GIVEAWAY_WORDS
-        if word in text_lower
+        if word in lower
     )
 
+    prop_context = any(
+        word in lower
+        for word in [
+            "prop firm",
+            "prop trading",
+            "funded account",
+            "funded trader",
+            "trading challenge",
+            "funding firm",
+        ]
+    )
+
+    known_firm = any(
+        firm.lower() in lower
+        for firm in PROP_FIRMS
+    )
+
+    # Broad discovery rule.
     if giveaway_hits == 0:
         return None
 
-    # Must contain some prop-firm/trading evidence.
-    prop_context = (
-        "prop firm" in text_lower
-        or "prop trading" in text_lower
-        or "funded account" in text_lower
-        or "funded trader" in text_lower
-        or "trading challenge" in text_lower
-        or "propfirm" in text_lower
-        or any(
-            firm.lower() in text_lower
-            for firm in PROP_FIRMS
-        )
-    )
-
-    if not prop_context:
+    if not prop_context and not known_firm:
         return None
 
-    # Reject obvious non-prop giveaways.
-    for word in EXCLUDE_WORDS:
-
-        if word in text_lower:
-            return None
-
-    score = score_item(title, summary)
+    score = calculate_score(
+        title,
+        summary,
+        article,
+    )
 
     if score < DISCOVERY_THRESHOLD:
         return None
 
-    firm = identify_firm(text)
+    firm = identify_firm(
+        combined
+    )
 
-    deadline = extract_deadline(text)
+    deadline = extract_deadline(
+        combined
+    )
+
+    # Prefer article text when available.
+    description = (
+        article
+        if article
+        else summary
+    )
+
+    description = description[:1800]
 
     return {
         "firm": firm,
         "title": title,
-        "summary": summary[:1200],
+        "summary": description,
         "link": link,
         "score": score,
         "deadline": deadline,
@@ -513,18 +675,23 @@ def analyse_entry(entry):
 
 
 # ============================================================
-# ID
+# UNIQUE ID
 # ============================================================
 
 def make_id(title, link):
 
-    raw = f"{title}|{link}".encode()
+    raw = (
+        f"{title}|{link}"
+        .encode("utf-8")
+    )
 
-    return hashlib.sha256(raw).hexdigest()
+    return hashlib.sha256(
+        raw
+    ).hexdigest()
 
 
 # ============================================================
-# SEEN DATABASE
+# SEEN
 # ============================================================
 
 def load_seen():
@@ -537,7 +704,9 @@ def load_seen():
             encoding="utf-8"
         ) as f:
 
-            return set(json.load(f))
+            return set(
+                json.load(f)
+            )
 
     except Exception:
 
@@ -546,9 +715,6 @@ def load_seen():
 
 def save_seen(seen):
 
-    # Keep the file manageable.
-    recent = list(seen)[-5000:]
-
     with open(
         SEEN_FILE,
         "w",
@@ -556,22 +722,21 @@ def save_seen(seen):
     ) as f:
 
         json.dump(
-            recent,
+            list(seen)[-5000:],
             f,
             indent=2
         )
 
 
 # ============================================================
-# FORMAT ALERT
+# ALERT FORMAT
 # ============================================================
 
 def format_alert(item):
 
     deadline = (
         item["deadline"]
-        if item["deadline"]
-        else "Not detected"
+        or "Not detected"
     )
 
     return (
@@ -581,64 +746,160 @@ def format_alert(item):
 
         f"🎁 {item['title']}\n\n"
 
-        f"⭐ Confidence: {item['score']}/100\n\n"
+        f"⭐ Confidence: "
+        f"{item['score']}/100\n\n"
 
-        f"📅 Deadline: {deadline}\n\n"
+        f"📅 Deadline: "
+        f"{deadline}\n\n"
 
         f"📝 {item['summary']}\n\n"
 
-        f"🔗 ENTER / SOURCE:\n{item['link']}"
+        f"🔗 ENTER / SOURCE:\n"
+        f"{item['link']}"
     )
 
 
 # ============================================================
-# SCANNER
+# DISCOVERY REPORT
 # ============================================================
 
-def scan():
+def discovery_report(candidates):
+
+    if not candidates:
+
+        return (
+            "🔎 PROP-FIRM GIVEAWAY HUNTER\n\n"
+            "No candidates above discovery threshold.\n\n"
+            f"Discovery: "
+            f"{DISCOVERY_THRESHOLD}/100\n"
+            f"Alert: "
+            f"{ALERT_THRESHOLD}/100"
+        )
+
+    candidates = sorted(
+        candidates,
+        key=lambda x: x["score"],
+        reverse=True
+    )
+
+    lines = [
+        "🔎 PROP-FIRM DISCOVERY REPORT",
+        "",
+        f"Candidates: {len(candidates)}",
+        "",
+    ]
+
+    for i, item in enumerate(
+        candidates[:10],
+        start=1
+    ):
+
+        lines.append(
+            f"{i}. {item['score']}/100 | "
+            f"{item['firm']}"
+        )
+
+        lines.append(
+            item["title"][:150]
+        )
+
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+# ============================================================
+# MAIN SCANNER
+# ============================================================
+
+def main():
 
     seen = load_seen()
 
     candidates = {}
 
-    total_results = 0
+    raw_results = 0
 
     print("=" * 60)
-    print("PROP-FIRM GIVEAWAY HUNTER")
+    print("PROP-FIRM GIVEAWAY HUNTER V3")
     print("=" * 60)
 
     for query in SEARCHES:
 
-        print(f'Searching: "{query}"')
+        print(
+            f'Searching: "{query}"'
+        )
 
-        feed = google_news(query)
+        feed = google_news(
+            query
+        )
 
         if not feed:
             continue
 
         for entry in feed.entries:
 
-            total_results += 1
+            raw_results += 1
 
-            item = analyse_entry(entry)
+            try:
 
-            if not item:
-                continue
+                item = analyse_entry(
+                    entry
+                )
 
-            uid = make_id(
-                item["title"],
-                item["link"]
-            )
+                if not item:
+                    continue
 
-            # Avoid duplicate articles from multiple searches.
-            candidates[uid] = item
+                uid = make_id(
+                    item["title"],
+                    item["link"]
+                )
+
+                candidates[uid] = item
+
+            except Exception as e:
+
+                print(
+                    "ITEM ERROR:",
+                    e
+                )
+
+    candidate_list = list(
+        candidates.values()
+    )
 
     print()
-    print(f"RAW RESULTS: {total_results}")
-    print(f"DISCOVERED CANDIDATES: {len(candidates)}")
+    print(
+        f"RESULTS SCANNED: "
+        f"{raw_results}"
+    )
+
+    print(
+        f"CANDIDATES DISCOVERED: "
+        f"{len(candidate_list)}"
+    )
 
     # --------------------------------------------------------
-    # Alert qualifying items
+    # Send discovery report
+    # --------------------------------------------------------
+
+    try:
+
+        send_telegram(
+            discovery_report(
+                candidate_list
+            )
+        )
+
+    except Exception as e:
+
+        print(
+            "DISCOVERY TELEGRAM ERROR:",
+            e
+        )
+
+    # --------------------------------------------------------
+    # Alert >= 70
     # --------------------------------------------------------
 
     alerts = []
@@ -656,7 +917,8 @@ def scan():
         )
 
     print(
-        f"QUALIFYING ALERTS: {len(alerts)}"
+        f"QUALIFYING ALERTS: "
+        f"{len(alerts)}"
     )
 
     # --------------------------------------------------------
@@ -667,9 +929,9 @@ def scan():
 
         try:
 
-            message = format_alert(item)
-
-            send_telegram(message)
+            send_telegram(
+                format_alert(item)
+            )
 
             print(
                 f"TELEGRAM SENT | "
@@ -689,42 +951,29 @@ def scan():
     save_seen(seen)
 
     # --------------------------------------------------------
-    # Scan summary
+    # Final summary
     # --------------------------------------------------------
 
-    if alerts:
-
-        summary = (
-            "🔎 Prop-Firm Giveaway Hunter\n\n"
-            f"Scan completed successfully.\n\n"
-            f"🚨 New qualifying giveaways: "
-            f"{len(alerts)}\n\n"
-            f"🔎 Discovery threshold: "
-            f"{DISCOVERY_THRESHOLD}/100\n"
-            f"🚨 Alert threshold: "
-            f"{ALERT_THRESHOLD}/100"
-        )
-
-    else:
-
-        summary = (
-            "🔎 Prop-Firm Giveaway Hunter\n\n"
-            "Scan completed successfully.\n\n"
-            "No new qualifying active "
-            "prop-firm giveaways found.\n\n"
-            f"🔎 Discovery threshold: "
-            f"{DISCOVERY_THRESHOLD}/100\n"
-            f"🚨 Alert threshold: "
-            f"{ALERT_THRESHOLD}/100\n\n"
-            f"📰 Results scanned: "
-            f"{total_results}\n"
-            f"🎯 Candidates discovered: "
-            f"{len(candidates)}"
-        )
+    summary = (
+        "🔎 Prop-Firm Giveaway Hunter\n\n"
+        "Scan completed successfully.\n\n"
+        f"📰 Results scanned: "
+        f"{raw_results}\n"
+        f"🎯 Candidates discovered: "
+        f"{len(candidate_list)}\n"
+        f"🚨 New alerts: "
+        f"{len(alerts)}\n\n"
+        f"🔎 Discovery threshold: "
+        f"{DISCOVERY_THRESHOLD}/100\n"
+        f"🚨 Alert threshold: "
+        f"{ALERT_THRESHOLD}/100"
+    )
 
     try:
 
-        send_telegram(summary)
+        send_telegram(
+            summary
+        )
 
     except Exception as e:
 
@@ -735,27 +984,26 @@ def scan():
 
 
 # ============================================================
-# MAIN
+# RUN
 # ============================================================
 
 if __name__ == "__main__":
 
     try:
 
-        scan()
+        main()
 
     except Exception as e:
 
         print(
-            "FATAL SCANNER ERROR:",
+            "FATAL ERROR:",
             repr(e)
         )
 
-        # Try to notify Telegram.
         try:
 
             send_telegram(
-                "❌ Prop-Firm Giveaway Hunter ERROR\n\n"
+                "❌ PROP-FIRM GIVEAWAY HUNTER ERROR\n\n"
                 f"{e}"
             )
 
